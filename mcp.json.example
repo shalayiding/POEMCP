@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "poemcp": {
+      "command": "python",
+      "args": ["/path/to/PoeMCP/server.py"]
+    }
+  }
+}

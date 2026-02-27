@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+
+# Virtual environment (root-level only)
+/venv/
+/.venv/
+/env/
+
+# Claude Code local settings (contains machine-specific paths)
+.claude/
+
+# MCP local config (contains absolute local paths — copy and adapt for your machine)
+.mcp.json
+
+# Debug / scratch files
+scarab_page.html
+*.html
+
+# Internal docs (not for public repo)
+toolDoc/
+plan.md
+PROJECT_PLAN.md
+reddit.md
+
+# OS
+.DS_Store
+Thumbs.db
