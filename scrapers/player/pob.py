@@ -20,6 +20,30 @@ _KEY_STATS = {
     "HitChance": "Hit Chance",
 }
 
+# Resistance stats
+_RESIST_STATS = {
+    "FireResist": "Fire",
+    "ColdResist": "Cold",
+    "LightningResist": "Lightning",
+    "ChaosResist": "Chaos",
+}
+
+# Defense stats (%, shown with % suffix) — use PoB's "Effective" keys
+_DEFENSE_STATS = {
+    "EffectiveSpellSuppressionChance": "Spell Suppression",
+    "EffectiveBlockChance": "Block",
+    "EffectiveSpellBlockChance": "Spell Block",
+    "AttackDodgeChance": "Attack Dodge",
+    "SpellDodgeChance": "Spell Dodge",
+}
+
+# Charge maximums
+_CHARGE_STATS = {
+    "EnduranceChargesMax": "Endurance",
+    "FrenzyChargesMax": "Frenzy",
+    "PowerChargesMax": "Power",
+}
+
 # Slot display order (using real PoB slot names)
 _SLOT_ORDER = [
     "Helmet", "Amulet", "Weapon 1", "Weapon 2", "Body Armour",
@@ -42,8 +66,9 @@ _SKIP_PREFIXES = (
     "Warlord Item", "Elder Item", "Shaper Item", "Synthesised Item",
 )
 
-# Mod annotation prefixes added by PoB
-_MOD_TAGS = ("{crafted}", "{mutated}", "{enchant}", "{fractured}", "{scourge}")
+# Regex to strip ALL PoB annotation tags like {crafted}, {tags:...}, {range:0.5}, {exarch}, etc.
+import re as _re
+_POB_TAG_RE = _re.compile(r'\{[^}]*\}')
 
 
 def _fetch_raw(url: str) -> str:
@@ -80,11 +105,8 @@ def _decode_pob(code: str) -> ET.Element:
 
 
 def _clean_mod(mod: str) -> str:
-    """Strip PoB annotation tags like {crafted}, {mutated} from mod text."""
-    for tag in _MOD_TAGS:
-        if mod.startswith(tag):
-            mod = mod[len(tag):]
-    return mod.strip()
+    """Strip all PoB annotation tags like {crafted}, {exarch}, {tags:...}, {range:0.5} etc."""
+    return _POB_TAG_RE.sub("", mod).strip()
 
 
 def _parse_build_info(root: ET.Element) -> dict:
@@ -101,10 +123,11 @@ def _parse_build_info(root: ET.Element) -> dict:
         "pantheon_minor": build.get("pantheonMinorGod", ""),
     }
 
+    all_tracked = {**_KEY_STATS, **_RESIST_STATS, **_DEFENSE_STATS, **_CHARGE_STATS}
     stats = {}
     for stat in build.findall("PlayerStat"):
         key = stat.get("stat", "")
-        if key in _KEY_STATS:
+        if key in all_tracked:
             try:
                 stats[key] = float(stat.get("value", "0"))
             except ValueError:
@@ -118,22 +141,44 @@ def _parse_skills(root: ET.Element) -> list[dict]:
     if skills_el is None:
         return []
 
+    # Identify the active SkillSet — fall back to first if not found
+    active_id = skills_el.get("activeSkillSet", "1")
+    skill_sets = skills_el.findall("SkillSet")
+
+    if skill_sets:
+        active_set = next(
+            (s for s in skill_sets if s.get("id") == active_id),
+            skill_sets[0],
+        )
+        skill_elements = active_set.findall("Skill")
+    else:
+        # Older PoB format: <Skill> directly under <Skills>
+        skill_elements = skills_el.findall("Skill")
+
     groups = []
-    for skill in skills_el.findall("Skill"):
+    for skill in skill_elements:
         if skill.get("enabled", "true").lower() == "false":
             continue
 
+        main_idx = int(skill.get("mainActiveSkill", "1")) - 1  # 1-based → 0-based
+
         gems = []
-        for gem in skill.findall("Gem"):
+        for i, gem in enumerate(skill.findall("Gem")):
             if gem.get("enabled", "true").lower() == "false":
                 continue
-            name = gem.get("skillId") or gem.get("nameSpec", "")
-            if name:
-                gems.append({
-                    "name": name,
-                    "level": gem.get("level", ""),
-                    "quality": gem.get("quality", "0"),
-                })
+            # nameSpec is the display name; skillId is internal
+            name = gem.get("nameSpec") or gem.get("skillId", "")
+            if not name:
+                continue
+            lvl = gem.get("level", "")
+            qual = gem.get("quality", "0")
+            is_main = (i == main_idx)
+            gems.append({
+                "name": name,
+                "level": lvl,
+                "quality": qual,
+                "is_main": is_main,
+            })
 
         if gems:
             groups.append({
@@ -240,8 +285,6 @@ def _parse_items(root: ET.Element) -> list[dict]:
 
     return equipped
 
-
-import re as _re
 
 def _split_camel(name: str) -> str:
     """'TheBrineKing' → 'The Brine King'"""
@@ -471,9 +514,42 @@ def parse_pob(code_or_url: str) -> str:
                 lines.append(f"- **{label}:** {int(val):,}")
         lines.append("")
 
+    # ── Resistances ──────────────────────────────────────────────
+    resist_parts = []
+    for key, label in _RESIST_STATS.items():
+        val = stats.get(key)
+        if val is not None:
+            resist_parts.append(f"{label}: {int(val)}%")
+    if resist_parts:
+        lines.append("## Resistances")
+        lines.append("  ".join(resist_parts))
+        lines.append("")
+
+    # ── Defense ──────────────────────────────────────────────────
+    defense_parts = []
+    for key, label in _DEFENSE_STATS.items():
+        val = stats.get(key)
+        if val is not None and val > 0:
+            defense_parts.append(f"{label}: {val:.1f}%")
+    if defense_parts:
+        lines.append("## Defense")
+        lines.append("  ".join(defense_parts))
+        lines.append("")
+
+    # ── Charges ──────────────────────────────────────────────────
+    charge_parts = []
+    for key, label in _CHARGE_STATS.items():
+        val = stats.get(key)
+        if val is not None and val > 0:
+            charge_parts.append(f"{label}: {int(val)}")
+    if charge_parts:
+        lines.append("## Max Charges")
+        lines.append("  ".join(charge_parts))
+        lines.append("")
+
     # ── Skill Links ──────────────────────────────────────────────
     if skills:
-        lines.append("## Skills")
+        lines.append("## Skill Links (Active Set)")
         for group in skills:
             slot = group["slot"] or group["label"] or "—"
             gem_parts = []
@@ -484,7 +560,10 @@ def parse_pob(code_or_url: str) -> str:
                 tag = f"L{lvl}" if lvl else ""
                 if qual and qual != "0":
                     tag += f"/Q{qual}"
-                gem_parts.append(f"{name} ({tag})" if tag else name)
+                label = f"{name} ({tag})" if tag else name
+                if g.get("is_main"):
+                    label = f"**{label}**"
+                gem_parts.append(label)
             lines.append(f"- **{slot}:** " + " — ".join(gem_parts))
         lines.append("")
 
