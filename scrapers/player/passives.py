@@ -2,7 +2,7 @@ import httpx
 
 from scrapers.common import HEADERS, Cache
 
-_tree_cache = Cache()
+_tree_cache: Cache[dict] = Cache()
 
 TREE_URL = "https://raw.githubusercontent.com/grindinggear/skilltree-export/master/data.json"
 

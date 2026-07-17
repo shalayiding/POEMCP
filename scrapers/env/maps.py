@@ -2,7 +2,7 @@ import httpx
 
 from scrapers.common import BASE_URL, Cache, fetch_page
 
-_map_cache = Cache()
+_map_cache: Cache[list[dict]] = Cache()
 
 
 def _get_all_maps() -> list[dict]:

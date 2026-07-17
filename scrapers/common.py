@@ -1,4 +1,5 @@
 import time
+from typing import Generic, TypeVar
 
 import httpx
 from bs4 import BeautifulSoup
@@ -19,18 +20,21 @@ def fetch_page(url: str) -> BeautifulSoup:
     return BeautifulSoup(text, "html.parser")
 
 
-class Cache:
+T = TypeVar("T")
+
+
+class Cache(Generic[T]):
     """Simple in-memory cache with TTL."""
 
     def __init__(self) -> None:
-        self._data: dict | None = None
+        self._data: T | None = None
         self._timestamp: float = 0
 
-    def get(self) -> dict | None:
-        if self._data and (time.time() - self._timestamp) < CACHE_TTL:
+    def get(self) -> T | None:
+        if self._data is not None and (time.time() - self._timestamp) < CACHE_TTL:
             return self._data
         return None
 
-    def set(self, data: dict) -> None:
+    def set(self, data: T) -> None:
         self._data = data
         self._timestamp = time.time()

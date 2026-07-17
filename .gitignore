@@ -22,6 +22,9 @@ build/
 scarab_page.html
 *.html
 
+# Local temp working dir (e.g. cloned reference repos)
+/temp/
+
 # Internal docs (not for public repo)
 toolDoc/
 plan.md

@@ -1,105 +1,99 @@
-"""Prefix/suffix modifier lookup for rare items from poedb.tw."""
+"""Prefix/suffix modifier lookup for rare items.
 
-import json
-import re
+Sourced from Path of Building's static Mod*.lua data files (GGG's own mod
+pool export, synced every patch) instead of scraping poedb.tw's per-item-type
+pages. Each mod's `weightKey`/`weightVal` arrays are the real drop-weight
+table GGG uses to decide which item bases a mod can roll on, which is more
+precise than the ~70 hand-mapped poedb slugs this module used to rely on.
+"""
+
 import time
 
-import httpx
+from scrapers.common import CACHE_TTL
+from scrapers.pob_data import fetch_lua_file, parse_lua_table
 
-from scrapers.common import BASE_URL, CACHE_TTL, HEADERS
+_STANDARD = ("ModExplicit.lua", "ModCorrupted.lua")
 
-# ---------------------------------------------------------------------------
-# Slug mapping — friendly name → poedb URL slug
-# ---------------------------------------------------------------------------
-
-ITEM_TYPE_SLUGS: dict[str, str] = {
+# friendly name -> (data files to load, weightKey tags that make a mod eligible)
+ITEM_TYPES: dict[str, tuple[tuple[str, ...], list[str]]] = {
     # One-Handed Weapons
-    "claws": "Claws",
-    "daggers": "Daggers",
-    "wands": "Wands",
-    "one hand swords": "One_Hand_Swords",
-    "one hand axes": "One_Hand_Axes",
-    "one hand maces": "One_Hand_Maces",
-    "sceptres": "Sceptres",
-    "rune daggers": "Rune_Daggers",
-    "thrusting one hand swords": "Thrusting_One_Hand_Swords",
+    "claws": (_STANDARD, ["claw"]),
+    "daggers": (_STANDARD, ["dagger"]),
+    "rune daggers": (_STANDARD, ["dagger"]),
+    "wands": (_STANDARD, ["wand"]),
+    "one hand swords": (_STANDARD, ["sword"]),
+    "thrusting one hand swords": (_STANDARD, ["sword", "rapier"]),
+    "one hand axes": (_STANDARD, ["axe"]),
+    "one hand maces": (_STANDARD, ["mace"]),
+    "sceptres": (_STANDARD, ["sceptre"]),
     # Two-Handed Weapons
-    "bows": "Bows",
-    "staves": "Staves",
-    "two hand swords": "Two_Hand_Swords",
-    "two hand axes": "Two_Hand_Axes",
-    "two hand maces": "Two_Hand_Maces",
-    "warstaves": "Warstaves",
-    "fishing rods": "Fishing_Rods",
-    # Jewellery
-    "amulets": "Amulets",
-    "rings": "Rings",
-    "belts": "Belts",
-    "trinkets": "Trinkets",
-    # Gloves
-    "gloves str": "Gloves_str",
-    "gloves dex": "Gloves_dex",
-    "gloves int": "Gloves_int",
-    "gloves str dex": "Gloves_str_dex",
-    "gloves str int": "Gloves_str_int",
-    "gloves dex int": "Gloves_dex_int",
-    # Boots
-    "boots str": "Boots_str",
-    "boots dex": "Boots_dex",
-    "boots int": "Boots_int",
-    "boots str dex": "Boots_str_dex",
-    "boots str int": "Boots_str_int",
-    "boots dex int": "Boots_dex_int",
-    # Body Armours
-    "body armours str": "Body_Armours_str",
-    "body armours dex": "Body_Armours_dex",
-    "body armours int": "Body_Armours_int",
-    "body armours str dex": "Body_Armours_str_dex",
-    "body armours str int": "Body_Armours_str_int",
-    "body armours dex int": "Body_Armours_dex_int",
-    "body armours str dex int": "Body_Armours_str_dex_int",
-    # Helmets
-    "helmets str": "Helmets_str",
-    "helmets dex": "Helmets_dex",
-    "helmets int": "Helmets_int",
-    "helmets str dex": "Helmets_str_dex",
-    "helmets str int": "Helmets_str_int",
-    "helmets dex int": "Helmets_dex_int",
-    # Shields
-    "shields str": "Shields_str",
-    "shields dex": "Shields_dex",
-    "shields int": "Shields_int",
-    "shields str dex": "Shields_str_dex",
-    "shields str int": "Shields_str_int",
-    "shields dex int": "Shields_dex_int",
+    "bows": (_STANDARD, ["bow"]),
+    "staves": (_STANDARD, ["staff"]),
+    "warstaves": (_STANDARD, ["staff"]),
+    "two hand swords": (_STANDARD, ["sword"]),
+    "two hand axes": (_STANDARD, ["axe"]),
+    "two hand maces": (_STANDARD, ["mace"]),
+    "fishing rods": (_STANDARD, ["fishing_rod"]),
     # Off-hand
-    "quivers": "Quivers",
-    # Jewels
-    "crimson jewel": "Crimson_Jewel",
-    "viridian jewel": "Viridian_Jewel",
-    "cobalt jewel": "Cobalt_Jewel",
-    "prismatic jewel": "Prismatic_Jewel",
-    "murderous eye jewel": "Murderous_Eye_Jewel",
-    "searching eye jewel": "Searching_Eye_Jewel",
-    "hypnotic eye jewel": "Hypnotic_Eye_Jewel",
-    "ghastly eye jewel": "Ghastly_Eye_Jewel",
-    "timeless jewel": "Timeless_Jewel",
-    "large cluster jewel": "Large_Cluster_Jewel",
-    "medium cluster jewel": "Medium_Cluster_Jewel",
-    "small cluster jewel": "Small_Cluster_Jewel",
+    "quivers": (_STANDARD, ["quiver"]),
+    # Jewellery
+    "amulets": (_STANDARD, ["amulet"]),
+    "rings": (_STANDARD, ["ring"]),
+    "unset ring": (_STANDARD, ["ring", "unset_ring"]),
+    "belts": (_STANDARD, ["belt"]),
+    # Gloves
+    "gloves str": (_STANDARD, ["gloves", "str_armour"]),
+    "gloves dex": (_STANDARD, ["gloves", "dex_armour"]),
+    "gloves int": (_STANDARD, ["gloves", "int_armour"]),
+    "gloves str dex": (_STANDARD, ["gloves", "str_dex_armour"]),
+    "gloves str int": (_STANDARD, ["gloves", "str_int_armour"]),
+    "gloves dex int": (_STANDARD, ["gloves", "dex_int_armour"]),
+    # Boots
+    "boots str": (_STANDARD, ["boots", "str_armour"]),
+    "boots dex": (_STANDARD, ["boots", "dex_armour"]),
+    "boots int": (_STANDARD, ["boots", "int_armour"]),
+    "boots str dex": (_STANDARD, ["boots", "str_dex_armour"]),
+    "boots str int": (_STANDARD, ["boots", "str_int_armour"]),
+    "boots dex int": (_STANDARD, ["boots", "dex_int_armour"]),
+    # Body Armours
+    "body armours str": (_STANDARD, ["body_armour", "str_armour"]),
+    "body armours dex": (_STANDARD, ["body_armour", "dex_armour"]),
+    "body armours int": (_STANDARD, ["body_armour", "int_armour"]),
+    "body armours str dex": (_STANDARD, ["body_armour", "str_dex_armour"]),
+    "body armours str int": (_STANDARD, ["body_armour", "str_int_armour"]),
+    "body armours dex int": (_STANDARD, ["body_armour", "dex_int_armour"]),
+    "body armours str dex int": (_STANDARD, ["body_armour", "str_dex_int_armour"]),
+    # Helmets
+    "helmets str": (_STANDARD, ["helmet", "str_armour"]),
+    "helmets dex": (_STANDARD, ["helmet", "dex_armour"]),
+    "helmets int": (_STANDARD, ["helmet", "int_armour"]),
+    "helmets str dex": (_STANDARD, ["helmet", "str_dex_armour"]),
+    "helmets str int": (_STANDARD, ["helmet", "str_int_armour"]),
+    "helmets dex int": (_STANDARD, ["helmet", "dex_int_armour"]),
+    # Shields
+    "shields str": (_STANDARD, ["shield", "str_shield"]),
+    "shields dex": (_STANDARD, ["shield", "dex_shield"]),
+    "shields int": (_STANDARD, ["shield", "int_shield"]),
+    "shields str dex": (_STANDARD, ["shield", "str_dex_shield"]),
+    "shields str int": (_STANDARD, ["shield", "str_int_shield"]),
+    "shields dex int": (_STANDARD, ["shield", "dex_int_shield"]),
+    # Jewels — colour doesn't split the mod pool in-game, all regular jewels share one pool
+    "crimson jewel": (("ModJewel.lua",), ["jewel"]),
+    "viridian jewel": (("ModJewel.lua",), ["jewel"]),
+    "cobalt jewel": (("ModJewel.lua",), ["jewel"]),
+    "prismatic jewel": (("ModJewel.lua",), ["jewel"]),
+    "murderous eye jewel": (("ModJewel.lua",), ["abyss_jewel"]),
+    "searching eye jewel": (("ModJewel.lua",), ["abyss_jewel"]),
+    "hypnotic eye jewel": (("ModJewel.lua",), ["abyss_jewel"]),
+    "ghastly eye jewel": (("ModJewel.lua",), ["abyss_jewel"]),
+    "large cluster jewel": (("ModJewelCluster.lua",), ["jewel"]),
+    "medium cluster jewel": (("ModJewelCluster.lua",), ["jewel"]),
+    "small cluster jewel": (("ModJewelCluster.lua",), ["jewel"]),
     # Flasks
-    "life flasks": "Life_Flasks",
-    "mana flasks": "Mana_Flasks",
-    "utility flasks": "Utility_Flasks",
-    "tinctures": "Tinctures",
-    # Special items
-    "unset ring": "Unset_Ring",
-    "bone ring": "Bone_Ring",
-    "convoking wand": "Convoking_Wand",
-    "bone spirit shield": "Bone_Spirit_Shield",
-    "runic crown": "Runic_Crown",
-    "runic sabatons": "Runic_Sabatons",
-    "runic gauntlets": "Runic_Gauntlets",
+    "life flasks": (("ModFlask.lua",), ["life_flask"]),
+    "mana flasks": (("ModFlask.lua",), ["mana_flask"]),
+    "utility flasks": (("ModFlask.lua",), ["utility_flask"]),
+    "tinctures": (("ModTincture.lua",), ["tincture"]),
 }
 
 # Attribute name aliases for fuzzy resolution
@@ -114,118 +108,86 @@ _ATTR_ALIASES: dict[str, str] = {
 }
 
 # ---------------------------------------------------------------------------
-# Cache — one entry per slug
+# Cache — one entry per Lua data file
 # ---------------------------------------------------------------------------
 
-_mod_cache: dict[str, tuple[float, dict]] = {}
-
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
-
-_HTML_TAG_RE = re.compile(r"<[^>]+>")
-_MOD_JSON_RE = re.compile(r"new\s+ModsView\s*\(\s*(\{.*?\})\s*\)\s*;?\s*\}", re.DOTALL)
+_file_cache: dict[str, tuple[float, dict]] = {}
 
 
-def _clean_mod_text(html_str: str) -> str:
-    """Strip HTML tags from a mod's 'str' field, returning plain text."""
-    return _HTML_TAG_RE.sub("", html_str).strip()
+def _load_file(filename: str) -> dict:
+    cached = _file_cache.get(filename)
+    if cached and (time.time() - cached[0]) < CACHE_TTL:
+        return cached[1]
+    text = fetch_lua_file(filename)
+    data = parse_lua_table(text)
+    _file_cache[filename] = (time.time(), data)
+    return data
 
 
 def _resolve_item_type(item_type: str) -> str | None:
-    """Resolve user input to a valid poedb URL slug.
+    """Resolve user input to a key in ITEM_TYPES.
 
-    Accepts:
-      - Exact slug: "Helmets_str"
-      - Lowercase friendly: "helmets str", "daggers"
-      - Attribute aliases: "helmets strength" → "Helmets_str"
+    Accepts exact friendly names, underscore/space variants, and attribute aliases
+    (e.g. "helmets strength" -> "helmets str").
     """
-    # Direct slug match (case-insensitive)
-    for slug in ITEM_TYPE_SLUGS.values():
-        if item_type.lower().replace(" ", "_") == slug.lower():
-            return slug
+    key = item_type.lower().strip().replace("_", " ")
+    if key in ITEM_TYPES:
+        return key
 
-    # Friendly name match
-    key = item_type.lower().strip()
-    if key in ITEM_TYPE_SLUGS:
-        return ITEM_TYPE_SLUGS[key]
-
-    # Try replacing attribute aliases
     normalized = key
     for alias, short in _ATTR_ALIASES.items():
         normalized = normalized.replace(alias, short)
-    if normalized in ITEM_TYPE_SLUGS:
-        return ITEM_TYPE_SLUGS[normalized]
+    if normalized in ITEM_TYPES:
+        return normalized
 
-    # Partial / substring match — pick best
-    matches = []
-    for friendly, slug in ITEM_TYPE_SLUGS.items():
-        if key in friendly or key in slug.lower():
-            matches.append((friendly, slug))
-
+    matches = [name for name in ITEM_TYPES if key in name]
     if len(matches) == 1:
-        return matches[0][1]
+        return matches[0]
     if matches:
-        # Prefer exact word boundary matches
-        for friendly, slug in matches:
-            if friendly.startswith(key) or slug.lower().startswith(key.replace(" ", "_")):
-                return slug
-        return matches[0][1]
+        for name in matches:
+            if name.startswith(key):
+                return name
+        return matches[0]
 
     return None
 
 
-def _fetch_mods(slug: str) -> dict:
-    """Fetch modifier JSON for an item type slug. Returns parsed dict with 'normal' and 'corrupted' arrays."""
-    # Check cache
-    if slug in _mod_cache:
-        ts, data = _mod_cache[slug]
-        if time.time() - ts < CACHE_TTL:
-            return data
+def _get_mod_pool(category: str) -> tuple[list[dict], list[dict]]:
+    """Return (normal, corrupted) mod entries eligible for a resolved category."""
+    files, tags = ITEM_TYPES[category]
+    tag_set = set(tags)
 
-    url = f"{BASE_URL}/{slug}"
-    resp = httpx.get(url, headers=HEADERS, follow_redirects=True, timeout=30)
-    resp.raise_for_status()
-    text = resp.text.replace("\u2014", "-")
+    normal = []
+    corrupted = []
+    for filename in files:
+        data = _load_file(filename)
+        for name, entry in data.items():
+            if not isinstance(entry, dict):
+                continue
+            if not tag_set.intersection(entry.get("weightKey", [])):
+                continue
+            text = (entry.get("_array") or [""])[0]
+            mod = {
+                "name": name,
+                "type": entry.get("type", ""),
+                "affix": entry.get("affix", ""),
+                "text": text,
+                "level": entry.get("level", 0),
+                "group": entry.get("group", ""),
+            }
+            if mod["type"] == "Corrupted":
+                corrupted.append(mod)
+            elif mod["type"] in ("Prefix", "Suffix"):
+                normal.append(mod)
 
-    # Extract JSON from new ModsView({...})
-    match = _MOD_JSON_RE.search(text)
-    if not match:
-        raise ValueError(f"Could not find ModsView JSON data on {url}")
-
-    raw_json = match.group(1)
-    data = json.loads(raw_json)
-
-    result = {
-        "normal": data.get("normal", []),
-        "corrupted": data.get("corrupted", []),
-    }
-
-    _mod_cache[slug] = (time.time(), result)
-    return result
+    return normal, corrupted
 
 
 def _format_mod(mod: dict) -> str:
-    """Format a single modifier entry into readable text."""
-    gen_id = mod.get("ModGenerationTypeID", "")
-    if gen_id == "1":
-        mod_type = "Prefix"
-    elif gen_id == "2":
-        mod_type = "Suffix"
-    elif gen_id == "5":
-        mod_type = "Corrupted"
-    else:
-        mod_type = f"Type {gen_id}"
-
-    name = mod.get("Name", "?")
-    level = mod.get("Level", "?")
-    text = _clean_mod_text(mod.get("str", ""))
-    families = ", ".join(mod.get("ModFamilyList", []))
-
-    lines = [f"- **{name}** ({mod_type}, iLvl {level})"]
-    lines.append(f"  {text}")
-    if families:
-        lines.append(f"  Mod family: {families}")
+    lines = [f"- **{mod['group'] or mod['name']}** ({mod['type']}, iLvl {mod['level']})"]
+    lines.append(f"  {mod['text']}")
+    if mod["affix"]:
+        lines.append(f"  Affix: \"{mod['affix']}\"")
     return "\n".join(lines)
 
 
@@ -246,11 +208,10 @@ def search_mods(item_type: str, query: str = "") -> str:
                    "body armours str int", "gloves dex", "cobalt jewel"
         query: Optional keyword to filter modifiers. If empty, returns a grouped overview.
     """
-    slug = _resolve_item_type(item_type)
-    if not slug:
-        # Build a helpful list of valid types
+    category = _resolve_item_type(item_type)
+    if not category:
         categories: dict[str, list[str]] = {}
-        for friendly in ITEM_TYPE_SLUGS:
+        for friendly in ITEM_TYPES:
             cat = friendly.split()[0].title()
             categories.setdefault(cat, []).append(friendly)
 
@@ -261,56 +222,23 @@ def search_mods(item_type: str, query: str = "") -> str:
                 lines.append(f"  ... and {len(names) - 5} more")
         return "\n".join(lines)
 
-    try:
-        data = _fetch_mods(slug)
-    except (httpx.HTTPStatusError, ValueError) as e:
-        return f"Error fetching modifiers for '{slug}': {e}"
-
-    normal = data["normal"]
-    corrupted = data["corrupted"]
-
-    display_name = slug.replace("_", " ")
+    normal, corrupted = _get_mod_pool(category)
+    display_name = category.title()
 
     if query:
         return _search_with_query(display_name, normal, corrupted, query)
-    else:
-        return _overview(display_name, slug, normal, corrupted)
+    return _overview(display_name, category, normal, corrupted)
 
 
-def _search_with_query(
-    display_name: str,
-    normal: list[dict],
-    corrupted: list[dict],
-    query: str,
-) -> str:
-    """Filter mods by keyword and return matching prefixes/suffixes."""
+def _search_with_query(display_name: str, normal: list[dict], corrupted: list[dict], query: str) -> str:
     q = query.lower()
 
-    prefixes = []
-    suffixes = []
-    corrupted_matches = []
+    def matches(mod: dict) -> bool:
+        return q in mod["text"].lower() or q in mod["group"].lower() or q in mod["affix"].lower()
 
-    for mod in normal:
-        text = _clean_mod_text(mod.get("str", "")).lower()
-        families = " ".join(mod.get("ModFamilyList", [])).lower()
-        name = mod.get("Name", "").lower()
-        if q in text or q in families or q in name:
-            gen_id = mod.get("ModGenerationTypeID", "")
-            if gen_id == "1":
-                prefixes.append(mod)
-            elif gen_id == "2":
-                suffixes.append(mod)
-
-    for mod in corrupted:
-        text = _clean_mod_text(mod.get("str", "")).lower()
-        families = " ".join(mod.get("ModFamilyList", [])).lower()
-        if q in text or q in families:
-            corrupted_matches.append(mod)
-
-    # Sort by level
-    prefixes.sort(key=lambda m: int(m.get("Level", "0")))
-    suffixes.sort(key=lambda m: int(m.get("Level", "0")))
-    corrupted_matches.sort(key=lambda m: int(m.get("Level", "0")))
+    prefixes = sorted((m for m in normal if m["type"] == "Prefix" and matches(m)), key=lambda m: m["level"])
+    suffixes = sorted((m for m in normal if m["type"] == "Suffix" and matches(m)), key=lambda m: m["level"])
+    corrupted_matches = sorted((m for m in corrupted if matches(m)), key=lambda m: m["level"])
 
     total = len(prefixes) + len(suffixes) + len(corrupted_matches)
     if total == 0:
@@ -336,28 +264,16 @@ def _search_with_query(
             lines.append(_format_mod(mod))
         lines.append("")
 
-    lines.append(f"Source: {BASE_URL}/{display_name.replace(' ', '_')}#ModifiersCalc")
     return "\n".join(lines)
 
 
-def _overview(
-    display_name: str,
-    slug: str,
-    normal: list[dict],
-    corrupted: list[dict],
-) -> str:
-    """Return a grouped overview of all mods for an item type."""
+def _overview(display_name: str, category: str, normal: list[dict], corrupted: list[dict]) -> str:
     prefixes: dict[str, list[dict]] = {}
     suffixes: dict[str, list[dict]] = {}
 
     for mod in normal:
-        gen_id = mod.get("ModGenerationTypeID", "")
-        families = mod.get("ModFamilyList", [])
-        family = families[0] if families else "Unknown"
-        if gen_id == "1":
-            prefixes.setdefault(family, []).append(mod)
-        elif gen_id == "2":
-            suffixes.setdefault(family, []).append(mod)
+        bucket = prefixes if mod["type"] == "Prefix" else suffixes
+        bucket.setdefault(mod["group"] or "Unknown", []).append(mod)
 
     total_pre = sum(len(v) for v in prefixes.values())
     total_suf = sum(len(v) for v in suffixes.values())
@@ -366,33 +282,29 @@ def _overview(
 
     if prefixes:
         lines.append(f"### Prefixes ({total_pre} mods, {len(prefixes)} families)\n")
-        for family in sorted(prefixes):
-            mods = prefixes[family]
-            levels = sorted(int(m.get("Level", "0")) for m in mods)
-            sample = _clean_mod_text(mods[0].get("str", ""))
+        for group in sorted(prefixes):
+            mods = prefixes[group]
+            levels = sorted(m["level"] for m in mods)
             lvl_range = f"iLvl {levels[0]}-{levels[-1]}" if len(levels) > 1 else f"iLvl {levels[0]}"
-            lines.append(f"- **{family}** ({len(mods)}): {sample} ({lvl_range})")
+            lines.append(f"- **{group}** ({len(mods)}): {mods[0]['text']} ({lvl_range})")
         lines.append("")
 
     if suffixes:
         lines.append(f"### Suffixes ({total_suf} mods, {len(suffixes)} families)\n")
-        for family in sorted(suffixes):
-            mods = suffixes[family]
-            levels = sorted(int(m.get("Level", "0")) for m in mods)
-            sample = _clean_mod_text(mods[0].get("str", ""))
+        for group in sorted(suffixes):
+            mods = suffixes[group]
+            levels = sorted(m["level"] for m in mods)
             lvl_range = f"iLvl {levels[0]}-{levels[-1]}" if len(levels) > 1 else f"iLvl {levels[0]}"
-            lines.append(f"- **{family}** ({len(mods)}): {sample} ({lvl_range})")
+            lines.append(f"- **{group}** ({len(mods)}): {mods[0]['text']} ({lvl_range})")
         lines.append("")
 
     if corrupted:
         lines.append(f"### Corrupted Implicits ({len(corrupted)} mods)\n")
         for mod in corrupted[:10]:
-            text = _clean_mod_text(mod.get("str", ""))
-            lines.append(f"- {text}")
+            lines.append(f"- {mod['text']}")
         if len(corrupted) > 10:
             lines.append(f"- ... and {len(corrupted) - 10} more")
         lines.append("")
 
-    lines.append(f"Use `search_mods(\"{slug}\", \"keyword\")` to filter by specific mod.\n")
-    lines.append(f"Source: {BASE_URL}/{slug}#ModifiersCalc")
+    lines.append(f"Use `search_mods(\"{category}\", \"keyword\")` to filter by specific mod.")
     return "\n".join(lines)

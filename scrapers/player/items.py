@@ -1,79 +1,108 @@
+import re
+
 import httpx
 
-from scrapers.common import BASE_URL, Cache, fetch_page
+from scrapers.common import HEADERS, Cache
 
-_item_cache = Cache()
+_item_cache: Cache[list[dict]] = Cache()
 
-ITEM_CATEGORIES = {
-    # One Handed Weapons
-    "Claws": "One Handed Weapons",
-    "Daggers": "One Handed Weapons",
-    "Wands": "One Handed Weapons",
-    "One Hand Swords": "One Handed Weapons",
-    "One Hand Axes": "One Handed Weapons",
-    "One Hand Maces": "One Handed Weapons",
-    "Sceptres": "One Handed Weapons",
-    "Rune Daggers": "One Handed Weapons",
-    "Thrusting One Hand Swords": "One Handed Weapons",
-    # Two Handed Weapons
-    "Bows": "Two Handed Weapons",
-    "Staves": "Two Handed Weapons",
-    "Two Hand Swords": "Two Handed Weapons",
-    "Two Hand Axes": "Two Handed Weapons",
-    "Two Hand Maces": "Two Handed Weapons",
-    "Warstaves": "Two Handed Weapons",
-    "Fishing Rods": "Two Handed Weapons",
-    # Off-hand
-    "Quivers": "Off-hand",
-    "Shields": "Off-hand",
-    # Armour
-    "Gloves": "Armour",
-    "Boots": "Armour",
-    "Body Armours": "Armour",
-    "Helmets": "Armour",
-    # Jewellery
-    "Amulets": "Jewellery",
-    "Rings": "Jewellery",
-    "Belts": "Jewellery",
-    "Trinkets": "Jewellery",
-}
+PATHOFBUILDING_RAW = (
+    "https://raw.githubusercontent.com/PathOfBuildingCommunity/PathOfBuilding/dev/src/Data/Uniques"
+)
+
+# Files containing plain item-text blocks (`[[ ... ]]`).
+# Excludes Special/Generated.lua, Special/WatchersEye.lua, Special/BoundByDestiny.lua —
+# those store procedural mod pools in a different Lua structure, not item text.
+UNIQUE_DATA_FILES = [
+    "amulet.lua", "axe.lua", "belt.lua", "body.lua", "boots.lua", "bow.lua",
+    "claw.lua", "dagger.lua", "fishing.lua", "flask.lua", "gloves.lua", "graft.lua",
+    "helmet.lua", "jewel.lua", "mace.lua", "quiver.lua", "ring.lua", "shield.lua",
+    "staff.lua", "sword.lua", "tincture.lua", "wand.lua",
+    "Special/New.lua", "Special/race.lua",
+]
+
+# Metadata line prefixes to skip while scanning toward "Implicits:".
+_SKIP_PREFIXES = (
+    "Variant:", "League:", "Source:", "Requires Level", "LevelReq:",
+    "Unique ID:", "Item Level:", "Quality:", "Sockets:", "Selling Price:",
+    "Radius:", "Limited to:", "Has Alt Variant", "Show Alt Variant",
+)
+
+_ITEM_BLOCK_RE = re.compile(r"\[\[(.*?)\]\]", re.DOTALL)
+_VARIANT_TAG_RE = re.compile(r"\{variant:([\d,]+)\}")
+_ANNOTATION_RE = re.compile(r"\{[^}]*\}")
+
+
+def _clean_mod(text: str) -> str:
+    return _ANNOTATION_RE.sub("", text).strip()
+
+
+def _parse_item_block(block: str) -> dict | None:
+    lines = [l.strip() for l in block.strip().splitlines() if l.strip()]
+    if len(lines) < 2:
+        return None
+
+    name = lines[0]
+    base_type = lines[1]
+    i = 2
+
+    variants = []
+    while i < len(lines) and lines[i].startswith("Variant:"):
+        variants.append(lines[i].removeprefix("Variant:").strip())
+        i += 1
+
+    # Skip remaining metadata lines until "Implicits:"
+    while i < len(lines) and not lines[i].startswith("Implicits:"):
+        i += 1
+
+    implicits = []
+    if i < len(lines) and lines[i].startswith("Implicits:"):
+        try:
+            n = int(lines[i].removeprefix("Implicits:").strip())
+        except ValueError:
+            n = 0
+        i += 1
+        for _ in range(n):
+            if i < len(lines):
+                implicits.append(_clean_mod(lines[i]))
+                i += 1
+
+    current_variant = len(variants) if variants else None
+    explicits = []
+    for line in lines[i:]:
+        m = _VARIANT_TAG_RE.search(line)
+        if m and current_variant is not None:
+            applies_to = {int(v) for v in m.group(1).split(",")}
+            if current_variant not in applies_to:
+                continue
+        explicits.append(_clean_mod(line))
+
+    return {
+        "name": name,
+        "base_type": base_type,
+        "implicits": implicits,
+        "explicits": explicits,
+    }
 
 
 def _get_all_items() -> list[dict]:
-    """Scrape /us/Unique_item and return all unique items with mods."""
+    """Fetch and parse Path of Building's unique item data files (GGG's own game data export)."""
     cached = _item_cache.get()
     if cached is not None:
         return cached
 
-    soup = fetch_page(f"{BASE_URL}/Unique_item")
     items = []
-
-    for entry in soup.select("div.d-flex.border-top.rounded"):
-        links = entry.find_all("a")
-        if len(links) < 2:
-            continue
-
-        name_span = entry.select_one("span.uniqueName")
-        type_span = entry.select_one("span.uniqueTypeLine")
-        if not name_span:
-            continue
-
-        name = name_span.get_text(strip=True)
-        base_type = type_span.get_text(strip=True) if type_span else ""
-
-        href = links[1].get("href", "")
-        url = f"https://poedb.tw{href}" if href.startswith("/") else href
-
-        implicits = [m.get_text(" ", strip=True) for m in entry.select("div.implicitMod")]
-        explicits = [m.get_text(" ", strip=True) for m in entry.select("div.explicitMod")]
-
-        items.append({
-            "name": name,
-            "base_type": base_type,
-            "url": url,
-            "implicits": implicits,
-            "explicits": explicits,
-        })
+    with httpx.Client(headers=HEADERS, follow_redirects=True, timeout=30) as client:
+        for filename in UNIQUE_DATA_FILES:
+            try:
+                resp = client.get(f"{PATHOFBUILDING_RAW}/{filename}")
+                resp.raise_for_status()
+            except httpx.HTTPError:
+                continue
+            for match in _ITEM_BLOCK_RE.finditer(resp.text):
+                item = _parse_item_block(match.group(1))
+                if item:
+                    items.append(item)
 
     _item_cache.set(items)
     return items
@@ -112,8 +141,7 @@ def _fuzzy_score(query: str, item: dict) -> int:
     return 0
 
 
-def _format_item_from_cache(item: dict) -> str:
-    """Format an item using only cached list data (fallback when detail page fails)."""
+def _format_item(item: dict) -> str:
     lines = [f"# {item['name']}"]
     lines.append(f"**Base type:** {item['base_type']}")
     lines.append("")
@@ -127,7 +155,6 @@ def _format_item_from_cache(item: dict) -> str:
         for mod in item["explicits"]:
             lines.append(f"- {mod}")
         lines.append("")
-    lines.append(f"**Full details:** {item['url']}")
     return "\n".join(lines)
 
 
@@ -160,7 +187,6 @@ def search_item(query: str) -> str:
             lines.append(f"  - {mod}")
         if len(item["explicits"]) > 3:
             lines.append(f"  - ... and {len(item['explicits']) - 3} more mods")
-        lines.append(f"  URL: {item['url']}")
         lines.append("")
 
     if len(matches) > 20:
@@ -177,78 +203,20 @@ def get_item_detail(item_name: str) -> str:
     """
     items = _get_all_items()
     query_lower = item_name.lower()
-    cached = None
+
+    match = None
     for item in items:
         if item["name"].lower() == query_lower:
-            cached = item
+            match = item
             break
 
-    if cached:
-        url = cached["url"]
-    else:
-        url = f"{BASE_URL}/{item_name.replace(' ', '_')}"
+    if not match:
+        for item in items:
+            if query_lower in item["name"].lower():
+                match = item
+                break
 
-    soup = None
-    try:
-        soup = fetch_page(url)
-    except httpx.HTTPStatusError:
-        if cached:
-            return _format_item_from_cache(cached)
+    if not match:
         return f"Could not find item '{item_name}'. Try search_item to find the correct name."
 
-    sections = []
-
-    if cached:
-        sections.append(f"# {cached['name']}")
-        sections.append(f"**Base type:** {cached['base_type']}")
-        sections.append("")
-        if cached["implicits"]:
-            sections.append("**Implicit:**")
-            for mod in cached["implicits"]:
-                sections.append(f"- {mod}")
-            sections.append("")
-        if cached["explicits"]:
-            sections.append("**Explicit:**")
-            for mod in cached["explicits"]:
-                sections.append(f"- {mod}")
-            sections.append("")
-    else:
-        sections.append(f"# {item_name}")
-        sections.append("")
-
-    if soup:
-        flavor = soup.select_one("div.flavourText")
-        if flavor:
-            sections.append(f"*{flavor.get_text(strip=True)}*\n")
-
-        popup = soup.select_one("div.gemPopup")
-        if popup:
-            desc = popup.select_one("div.secDescrText")
-            if desc:
-                sections.append(f"*{desc.get_text(strip=True)}*\n")
-
-        for card in soup.select("div.card"):
-            header = card.select_one("h5.card-header")
-            if not header:
-                continue
-            header_text = header.get_text(strip=True)
-            if "Acquisition" in header_text:
-                sources = []
-                for tr in card.select("tbody tr"):
-                    tds = tr.find_all("td")
-                    if tds:
-                        source = tds[0].get_text(strip=True)
-                        if source:
-                            sources.append(source)
-                if sources:
-                    sections.append("**Acquisition:**")
-                    for src in sources:
-                        sections.append(f"- {src}")
-                    sections.append("")
-
-        wiki_link = soup.find("a", string="Community Wiki")
-        if wiki_link and wiki_link.get("href"):
-            sections.append(f"**Community Wiki:** {wiki_link['href']}")
-
-    sections.append(f"**Full details:** {url}")
-    return "\n".join(sections)
+    return _format_item(match)
