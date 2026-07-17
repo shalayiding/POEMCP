@@ -160,7 +160,8 @@ def _parse_skills(root: ET.Element) -> list[dict]:
         if skill.get("enabled", "true").lower() == "false":
             continue
 
-        main_idx = int(skill.get("mainActiveSkill", "1")) - 1  # 1-based → 0-based
+        raw_main = skill.get("mainActiveSkill", "1")
+        main_idx = int(raw_main) - 1 if raw_main and raw_main.isdigit() else -1  # 1-based → 0-based; "nil" = no main skill in this group
 
         gems = []
         for i, gem in enumerate(skill.findall("Gem")):
