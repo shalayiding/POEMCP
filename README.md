@@ -218,11 +218,11 @@ Fetch and extract readable content from a poewiki.net page.
 
 ### `parse_pob`
 
-Parse a Path of Building export code or share URL into a full build summary.
+Parse a Path of Building share URL into a full build summary.
 
 |                |                                                                                                                                   |
 | -------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| **Parameters** | `code_or_url: str` — accepts a raw PoB base64 export code, a pobb.in URL, or a Pastebin URL                                       |
+| **Parameters** | `url: str` — a pobb.in URL or a Pastebin URL. Raw pasted export codes aren't accepted — they're thousands of characters long and reliably get corrupted in transit through chat/text input; export to pobb.in or Pastebin and share the link instead. |
 | **Returns**    | Full build summary including:                                                                                                     |
 |                | • Class, ascendancy, level                                                                                                        |
 |                | • Build notes (author's written guide, color codes stripped)                                                                      |

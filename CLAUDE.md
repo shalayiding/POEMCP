@@ -219,9 +219,17 @@ count/corruption/gem level into the free-text `variant` field now); `graph` is a
 ## PoB (Path of Building) parser — `scrapers/player/pob.py`
 
 **Input formats accepted:**
-- Raw base64 PoB export code
 - `https://pobb.in/{id}` or `https://pobb.in/u/{user}/{id}` (fetches `/raw` endpoint)
 - `https://pastebin.com/{id}` (fetches `pastebin.com/raw/{id}`)
+
+**Raw pasted export codes are deliberately NOT accepted** — they're several thousand
+characters long and reliably get truncated/corrupted when pasted through chat input
+(confirmed empirically: a corrupted paste decompresses ~3KB of genuinely valid PoB XML
+before hitting a mid-stream zlib error — the decode pipeline itself is correct, verified
+byte-for-byte against PoB's own `Common.lua`/`ImportTab.lua` decode logic; the failure is
+transit corruption of the pasted string, not a format mismatch). URLs don't have this
+problem since the server fetches the code directly — no copy-paste involved. `parse_pob`
+rejects non-URL input with a message pointing the user to pobb.in/Pastebin instead.
 
 **Decode pipeline:**
 ```

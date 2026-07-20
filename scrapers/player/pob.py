@@ -413,29 +413,40 @@ def _parse_passives(root: ET.Element) -> dict:
     }
 
 
-def parse_pob(code_or_url: str) -> str:
-    """Parse a Path of Building export code or share URL.
+def parse_pob(url: str) -> str:
+    """Parse a Path of Building share URL.
 
     Accepts:
-    - Raw PoB export code (base64 string from PoB's Export button)
     - pobb.in URL (https://pobb.in/xxxxx or https://pobb.in/u/username/xxxxx)
     - Pastebin URL (https://pastebin.com/xxxxx)
+
+    Raw pasted export codes are not supported — they're several thousand characters
+    long and reliably get truncated/corrupted in transit through chat input, which
+    fails as a cryptic zlib decompression error rather than a clear one. Share the
+    build via pobb.in or Pastebin instead; the server fetches the code directly, no
+    copy-paste involved.
 
     Returns a build summary including class, level, key stats, skill links,
     equipped items with mods, and allocated keystones and notable passives.
 
     Args:
-        code_or_url: PoB export code, pobb.in share URL, or pastebin URL.
+        url: pobb.in share URL or pastebin URL.
     """
-    code = code_or_url.strip()
+    url = url.strip()
 
-    if code.startswith("http"):
-        try:
-            code = _fetch_raw(code)
-        except httpx.HTTPStatusError as e:
-            return f"Failed to fetch PoB data: HTTP {e.response.status_code} from {e.request.url}"
-        except Exception as e:
-            return f"Failed to fetch PoB data: {e}"
+    if not url.startswith("http"):
+        return (
+            "parse_pob only accepts pobb.in or pastebin.com URLs, not raw pasted export codes "
+            "— long pasted codes reliably get corrupted in transit. Export your build to "
+            "pobb.in (or Pastebin) and share that link instead."
+        )
+
+    try:
+        code = _fetch_raw(url)
+    except httpx.HTTPStatusError as e:
+        return f"Failed to fetch PoB data: HTTP {e.response.status_code} from {e.request.url}"
+    except Exception as e:
+        return f"Failed to fetch PoB data: {e}"
 
     try:
         root = _decode_pob(code)
