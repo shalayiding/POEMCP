@@ -2,7 +2,7 @@ from mcp.server.fastmcp import FastMCP
 
 from scrapers.player.gems import get_gem_detail, search_gem
 from scrapers.player.items import get_item_detail, search_item
-from scrapers.player.passives import get_passive_detail, search_passive
+from scrapers.player.passives import get_passive_detail, passive_tree_path, search_passive
 from scrapers.mods.item_mods import search_mods
 from scrapers.env import env_detail, env_search
 from scrapers.economy import currency_overview, price_check
@@ -18,6 +18,7 @@ mcp.tool()(search_item)
 mcp.tool()(get_item_detail)
 mcp.tool()(search_passive)
 mcp.tool()(get_passive_detail)
+mcp.tool()(passive_tree_path)
 
 # --- Mods domain ---
 mcp.tool()(search_mods)

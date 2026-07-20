@@ -9,7 +9,7 @@ more stable, see "Path of Building data source" below). No official API is used 
 ## Quick orientation
 
 ```
-server.py               Entry point — FastMCP wiring, 13 tool registrations
+server.py               Entry point — FastMCP wiring, 14 tool registrations
 scrapers/
   common.py             fetch_page(), Cache class, BASE_URL, HEADERS (poedb.tw scraping)
   pob_data.py            fetch_lua_file(), parse_lua_table(), parse_lua_assignments() — PathOfBuilding data
@@ -44,11 +44,11 @@ Use `.mcp.json.example` as the template.
 
 Standard library: `base64`, `zlib`, `xml.etree.ElementTree`, `re`, `json`, `time`.
 
-## Tools (13 total)
+## Tools (14 total)
 
 | Domain | Tools |
 |--------|-------|
-| Player | `search_gem`, `get_gem_detail`, `search_item`, `get_item_detail`, `search_passive`, `get_passive_detail`, `parse_pob` |
+| Player | `search_gem`, `get_gem_detail`, `search_item`, `get_item_detail`, `search_passive`, `get_passive_detail`, `passive_tree_path`, `parse_pob` |
 | Mods | `search_mods` |
 | Env | `env_search`, `env_detail` |
 | Economy | `price_check`, `currency_overview` |
@@ -245,6 +245,29 @@ base64 URL-safe decode (with padding correction)
 - `<ItemSet>`, `<TreeSpec>`, `<SkillSet>`: progression stages via `{N}` index tags
 - `<Tree>`: passive node IDs (keystones, notables, node count)
 - `<Notes>`: build notes (strip PoB color codes: `{color}...{/color}`)
+
+**PlayerStat coverage and Build Warnings:** PoB writes ~100 computed `<PlayerStat>` values
+into every export (it already ran its own calc engine when the user hit Export) — `pob.py`
+reads a curated subset into `_KEY_STATS`/`_RESIST_STATS`/`_DEFENSE_STATS`/`_CHARGE_STATS`/
+`_EHP_STATS`/`_SUSTAIN_STATS`/`_DPS_BREAKDOWN_STATS`. `_build_warnings()` flags issues
+(uncapped resistances, negative chaos res, weakest damage type relative to the others, no
+chance-based mitigation layer, degen exceeding regen, unmet attribute requirements) using
+these real numbers — no formulas are reimplemented. **Known false positive:** items that
+change how a resistance works (e.g. Doryani's Prototype: "Armour also applies to Lightning
+Damage taken", "Lightning Resistance does not affect Lightning Damage taken") aren't
+special-cased, so the uncapped-resistance warning can fire on a stat that's actually
+irrelevant in-game for that specific build. **Known crash class already fixed once:** PoB
+reports `inf` for a `MaximumHitTaken` a build is fully immune to (e.g. Chaos Inoculation →
+infinite chaos hit pool) — plain `int()` formatting raises `OverflowError` on that; use
+`_fmt_stat_int()` for any new PlayerStat display code, not a bare `int(val)`.
+
+**`passive_tree_path(build_url, target_node)`** (`scrapers/player/passives.py`) reimplements
+PoB's own tree-pathing algorithm (`PassiveSpec:BuildPathFromNode`, 0-1 BFS: free through
+already-allocated nodes, +1 per new node, can't cut through class-start/ascendancy-start
+nodes, can't cross ascendancy boundaries, can't path onward from a mastery) against the same
+GGG skilltree-export JSON `passives.py` already loads. Detects nodes with no `in`/`out` graph
+data (Cluster Jewel-only notables — they have no fixed tree location) and returns a message
+pointing at `search_item`/`price_check` instead of a misleading "no path found".
 
 ## Item-type tag mapping (`search_mods`)
 

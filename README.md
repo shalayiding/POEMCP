@@ -146,6 +146,18 @@ Get full information about a specific passive skill tree node.
 
 ---
 
+### `passive_tree_path`
+
+Find the shortest passive-tree path from a build's currently allocated nodes to a target node — mirrors Path of Building's own pathing algorithm, so the point cost is exact, not estimated.
+
+|                |                                                                                                                                                          |
+| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Parameters** | `build_url: str` — a pobb.in or pastebin.com URL for the build to path from                                                                            |
+|                | `target_node: str` — name of the notable/keystone/passive to path to, e.g. `"Cult-Leader"`                                                              |
+| **Returns**    | Number of *new* points required (moving through already-allocated nodes is free) and the full node-by-node path. If the target has no fixed tree location, reports that it's a Cluster Jewel-only notable instead of a false "not found". |
+
+---
+
 ### `search_mods`
 
 Search for item modifiers (prefixes and suffixes) available on a given item type.
@@ -228,7 +240,9 @@ Parse a Path of Building share URL into a full build summary.
 |                | • Build notes (author's written guide, color codes stripped)                                                                      |
 |                | • Progression stages — each gear/skill/tree loadout with stage title and node count, so you can follow a build guide step by step |
 |                | • Bandit choice and Pantheon gods                                                                                                 |
+|                | • **Build Warnings** — auto-flagged issues computed from PoB's own numbers: uncapped resistances, negative chaos resistance, the build's weakest damage type relative to the others, no chance-based mitigation layer, self-inflicted degen exceeding regen, unmet attribute requirements |
 |                | • Key stats (Life, ES, Armour, Evasion, DPS, Hit Chance, etc.)                                                                    |
+|                | • Effective Hit Pool per damage type, Sustain (regen/degen/leech), and a DPS breakdown (culling, bleed, ignite, poison, DoT) — all read directly from PoB's own computed `PlayerStat` values, not recalculated |
 |                | • All skill links grouped by slot                                                                                                 |
 |                | • Every equipped item with full mod list (implicits + explicits, crafted mods labelled)                                           |
 |                | • Allocated keystones and notable passives from the passive tree                                                                  |

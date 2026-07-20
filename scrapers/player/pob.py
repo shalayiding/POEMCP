@@ -44,6 +44,36 @@ _CHARGE_STATS = {
     "PowerChargesMax": "Power",
 }
 
+# Effective hit pool — PoB already computes these per damage type; we don't need to
+# reimplement the armour/evasion/resistance math ourselves, just surface what it exported.
+_EHP_STATS = {
+    "TotalEHP": "Total EHP",
+    "PhysicalMaximumHitTaken": "vs Physical",
+    "LightningMaximumHitTaken": "vs Lightning",
+    "FireMaximumHitTaken": "vs Fire",
+    "ColdMaximumHitTaken": "vs Cold",
+    "ChaosMaximumHitTaken": "vs Chaos",
+}
+
+# Sustain: recovery vs. ongoing loss
+_SUSTAIN_STATS = {
+    "TotalNetRegen": "Net Regen (all pools)",
+    "TotalBuildDegen": "Self-inflicted Degen",
+    "LifeLeechGainRate": "Life Leech Rate",
+    "ManaLeechGainRate": "Mana Leech Rate",
+    "EnergyShieldLeechGainRate": "ES Leech Rate",
+}
+
+# DPS breakdown beyond the flat "Total DPS" headline
+_DPS_BREAKDOWN_STATS = {
+    "CombinedDPS": "Combined (Hit + DoT)",
+    "CullingDPS": "Culling Strike",
+    "BleedDPS": "Bleed",
+    "WithIgniteDPS": "With Ignite",
+    "WithPoisonDPS": "With Poison",
+    "TotalDotDPS": "Total DoT",
+}
+
 # Slot display order (using real PoB slot names)
 _SLOT_ORDER = [
     "Helmet", "Amulet", "Weapon 1", "Weapon 2", "Body Armour",
@@ -69,6 +99,18 @@ _SKIP_PREFIXES = (
 # Regex to strip ALL PoB annotation tags like {crafted}, {tags:...}, {range:0.5}, {exarch}, etc.
 import re as _re
 _POB_TAG_RE = _re.compile(r'\{[^}]*\}')
+
+
+def _fmt_stat_int(val: float) -> str:
+    """Format a PlayerStat value as an integer string. PoB legitimately reports infinity
+    for some stats (e.g. MaximumHitTaken for a damage type you're fully immune to), which
+    crashes a plain int() conversion — surface it as "Immune" instead of erroring out.
+    """
+    if val == float("inf"):
+        return "Immune"
+    if val == float("-inf"):
+        return "-∞"
+    return f"{int(val):,}"
 
 
 def _fetch_raw(url: str) -> str:
@@ -123,11 +165,18 @@ def _parse_build_info(root: ET.Element) -> dict:
         "pantheon_minor": build.get("pantheonMinorGod", ""),
     }
 
-    all_tracked = {**_KEY_STATS, **_RESIST_STATS, **_DEFENSE_STATS, **_CHARGE_STATS}
+    all_tracked = {
+        **_KEY_STATS, **_RESIST_STATS, **_DEFENSE_STATS, **_CHARGE_STATS,
+        **_EHP_STATS, **_SUSTAIN_STATS, **_DPS_BREAKDOWN_STATS,
+    }
+    # Attribute requirement checks in _build_warnings need these even though they're not
+    # displayed in their own section.
+    _WARNING_ONLY_STATS = {"Str", "ReqStr", "Dex", "ReqDex", "Int", "ReqInt"}
+
     stats = {}
     for stat in build.findall("PlayerStat"):
         key = stat.get("stat", "")
-        if key in all_tracked:
+        if key in all_tracked or key in _WARNING_ONLY_STATS:
             try:
                 stats[key] = float(stat.get("value", "0"))
             except ValueError:
@@ -413,6 +462,65 @@ def _parse_passives(root: ET.Element) -> dict:
     }
 
 
+def _build_warnings(stats: dict) -> list[str]:
+    """Flag build issues using PoB's own computed PlayerStat values — not reimplemented formulas."""
+    warnings: list[str] = []
+
+    # Uncapped elemental resistances (base cap is 75%)
+    for key, label in (("FireResist", "Fire"), ("ColdResist", "Cold"), ("LightningResist", "Lightning")):
+        val = stats.get(key)
+        if val is not None and val < 75:
+            warnings.append(f"{label} Resistance is {val:.0f}% — not capped at 75%, this is a real damage-taken increase against {label.lower()} hits.")
+
+    chaos_res = stats.get("ChaosResist")
+    if chaos_res is not None and chaos_res < 0:
+        warnings.append(f"Chaos Resistance is {chaos_res:.0f}% (negative) — taking increased Chaos damage. Note Chaos bypasses Energy Shield by default.")
+
+    # Weakest damage type to face, relative to the others
+    hit_taken = {
+        "Physical": stats.get("PhysicalMaximumHitTaken"),
+        "Lightning": stats.get("LightningMaximumHitTaken"),
+        "Fire": stats.get("FireMaximumHitTaken"),
+        "Cold": stats.get("ColdMaximumHitTaken"),
+        "Chaos": stats.get("ChaosMaximumHitTaken"),
+    }
+    present = {k: v for k, v in hit_taken.items() if v}
+    if len(present) >= 2:
+        weakest_type, weakest_val = min(present.items(), key=lambda kv: kv[1])
+        strongest_val = max(present.values())
+        if strongest_val > 0 and weakest_val / strongest_val < 0.6:
+            pct = weakest_val / strongest_val * 100
+            warnings.append(
+                f"{weakest_type} is this build's weakest damage type to face — it can only survive "
+                f"a hit {pct:.0f}% the size of what it can survive from its strongest type."
+            )
+
+    # No chance-based mitigation layer at all (block/dodge/suppression)
+    chance_layers = ["EffectiveBlockChance", "EffectiveSpellBlockChance", "AttackDodgeChance", "SpellDodgeChance", "EffectiveSpellSuppressionChance"]
+    if all((stats.get(k) or 0) < 1 for k in chance_layers):
+        warnings.append(
+            "No block, dodge, or spell suppression — this build relies entirely on its raw hit "
+            "pool (life/ES) and damage reduction to survive, with no chance-based layer as backup."
+        )
+
+    # Self-inflicted degen exceeding total regen
+    degen = stats.get("TotalBuildDegen")
+    regen = stats.get("TotalNetRegen")
+    if degen and regen is not None and degen > regen:
+        warnings.append(
+            f"Self-inflicted/ongoing degen ({degen:.0f}/s) exceeds total regen ({regen:.0f}/s) — "
+            "this build is losing resources even while standing still and not being hit."
+        )
+
+    # Unmet attribute requirements — the character couldn't actually equip its own gear
+    for stat_key, req_key, label in (("Str", "ReqStr", "Strength"), ("Dex", "ReqDex", "Dexterity"), ("Int", "ReqInt", "Intelligence")):
+        have, need = stats.get(stat_key), stats.get(req_key)
+        if have is not None and need is not None and have < need:
+            warnings.append(f"{label} requirement not met: has {have:.0f}, needs {need:.0f} — gear/gems as configured couldn't actually be equipped.")
+
+    return warnings
+
+
 def parse_pob(url: str) -> str:
     """Parse a Path of Building share URL.
 
@@ -508,6 +616,14 @@ def parse_pob(url: str) -> str:
     if details:
         lines += details + [""]
 
+    # ── Build Warnings ───────────────────────────────────────────
+    warnings = _build_warnings(build.get("stats", {}))
+    if warnings:
+        lines.append("## Build Warnings")
+        for w in warnings:
+            lines.append(f"- {w}")
+        lines.append("")
+
     # ── Key Stats ────────────────────────────────────────────────
     stats = build.get("stats", {})
     if stats:
@@ -523,7 +639,7 @@ def parse_pob(url: str) -> str:
             elif key == "Speed":
                 lines.append(f"- **{label}:** {val:.2f}")
             else:
-                lines.append(f"- **{label}:** {int(val):,}")
+                lines.append(f"- **{label}:** {_fmt_stat_int(val)}")
         lines.append("")
 
     # ── Resistances ──────────────────────────────────────────────
@@ -535,6 +651,39 @@ def parse_pob(url: str) -> str:
     if resist_parts:
         lines.append("## Resistances")
         lines.append("  ".join(resist_parts))
+        lines.append("")
+
+    # ── Effective Hit Pool ───────────────────────────────────────
+    ehp_parts = []
+    for key, label in _EHP_STATS.items():
+        val = stats.get(key)
+        if val is not None and val > 0:
+            ehp_parts.append(f"{label}: {_fmt_stat_int(val)}")
+    if ehp_parts:
+        lines.append("## Effective Hit Pool (max single hit survivable)")
+        lines.append("  ".join(ehp_parts))
+        lines.append("")
+
+    # ── Sustain ──────────────────────────────────────────────────
+    sustain_parts = []
+    for key, label in _SUSTAIN_STATS.items():
+        val = stats.get(key)
+        if val is not None and val != 0:
+            sustain_parts.append(f"{label}: {val:,.1f}/s")
+    if sustain_parts:
+        lines.append("## Sustain")
+        lines.append("  ".join(sustain_parts))
+        lines.append("")
+
+    # ── DPS Breakdown ────────────────────────────────────────────
+    dps_parts = []
+    for key, label in _DPS_BREAKDOWN_STATS.items():
+        val = stats.get(key)
+        if val is not None and val > 0:
+            dps_parts.append(f"{label}: {val:,.0f}")
+    if dps_parts:
+        lines.append("## DPS Breakdown")
+        lines.append("  ".join(dps_parts))
         lines.append("")
 
     # ── Defense ──────────────────────────────────────────────────
