@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "poemcp"
+name = "poe-buildmcp"
 version = "0.1.0"
 description = "MCP server for Path of Exile game data"
 readme = "README.md"
@@ -13,6 +13,10 @@ dependencies = [
     "httpx",
     "beautifulsoup4",
 ]
+
+[project.urls]
+Homepage = "https://github.com/shalayiding/POEMCP"
+Repository = "https://github.com/shalayiding/POEMCP"
 
 [project.scripts]
 poemcp = "server:main"

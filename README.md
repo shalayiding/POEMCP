@@ -8,15 +8,35 @@ Data is fetched at runtime from [poedb.tw](https://poedb.tw), [poe.ninja](https:
 
 ### Requirements
 
-- Python 3.10+
-- [Claude Desktop](https://claude.ai/download) or Claude Code (CLI)
+- [Claude Desktop](https://claude.ai/download), Claude Code (CLI), or any other MCP-compatible client
 - Internet access (all data is fetched at runtime)
 
-### Steps
+### Quick install (recommended) — no clone, no manual setup
 
-> **⚠️ Python 3.10+ is required.** PoeMCP will not work without it.
-> Download from [python.org](https://www.python.org/downloads/) if you don't have it.
-> After installing, verify by running `python --version` in your terminal.
+PoeMCP is published to PyPI as `poe-buildmcp`, so an ephemeral runner like [`uvx`](https://github.com/astral-sh/uv) can fetch and run it on demand — nothing to clone or keep updated. Add this to your MCP client config:
+
+```json
+{
+  "mcpServers": {
+    "poemcp": {
+      "command": "uvx",
+      "args": ["--from", "poe-buildmcp", "poemcp"]
+    }
+  }
+}
+```
+
+- **Claude Desktop config location:** macOS `~/Library/Application Support/Claude/claude_desktop_config.json` · Windows `%APPDATA%\Claude\claude_desktop_config.json`
+- **Claude Code (CLI):** add the same block to your project's `.mcp.json` — see `mcp.json.example`
+- Requires [`uv`](https://docs.astral.sh/uv/getting-started/installation/) installed (which provides `uvx`); no separate Python install needed, `uvx` manages its own interpreter.
+
+> **💡 Not sure how to configure Claude?**
+> Ask Claude directly: *"Add an MCP server called PoeMCP to my config, using command `uvx` and args `[\"--from\", \"poe-buildmcp\", \"poemcp\"]`."*
+> Claude will walk you through finding the config file and adding the correct JSON block for your OS.
+
+### Manual install (for development / hacking on the source)
+
+> **⚠️ Python 3.10+ is required** for this path. Download from [python.org](https://www.python.org/downloads/) if you don't have it.
 
 ```bash
 git clone https://github.com/shalayiding/POEMCP.git
@@ -24,21 +44,7 @@ cd POEMCP
 pip install -e .
 ```
 
-> **💡 Not sure how to configure Claude?**
-> Ask Claude directly:
-> *"Guide me step by step to add a local MCP server called PoeMCP to my Claude config. The command is `python` and the argument is the full path to `server.py` in the POEMCP folder I cloned."*
-> Claude will walk you through finding the config file and adding the correct JSON block for your OS.
-
-## MCP Configuration
-
-Add the following to your Claude config, replacing the path with the directory where you cloned the repo. For a step-by-step visual walkthrough, see **installation and out put example in** [examples.md](examples.md).
-
-### Claude Desktop
-
-File location:
-
-- **macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
-- **Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
+Then point your MCP config at the cloned copy instead of `uvx`:
 
 **macOS / Linux:**
 
@@ -66,11 +72,7 @@ File location:
 }
 ```
 
-### Claude Code (CLI)
-
-Add to your project's `.mcp.json`. See `mcp.json.example` for the template.
-
-> **Note:** Use the full absolute path to `server.py`.
+For a step-by-step visual walkthrough, see **installation and output example in** [examples.md](examples.md).
 
 ---
 
